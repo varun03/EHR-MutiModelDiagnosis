@@ -1,0 +1,5 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+train=103  val=26
+
+Baseline (always predict the 12 most common): {'precision': 0.3269, 'recall': 0.3682, 'f1': 0.3463, 'jaccard': 0.2115}
+Loading weights:   0%|          | 0/131 [00:00<?, ?it/s]Loading weights: 100%|##########| 131/131 [00:00<00:00, 8363.07it/s]

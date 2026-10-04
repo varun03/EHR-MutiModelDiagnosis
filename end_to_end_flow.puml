@@ -1,0 +1,108 @@
+@startuml
+title EHR-KnowGen Demo - End-to-End Code Flow
+
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+
+actor User
+
+package "Raw data" {
+  database "MIMIC-III CSV files" as raw {
+    [ADMISSIONS.csv]
+    [PATIENTS.csv]
+    [DIAGNOSES_ICD.csv]
+    [PROCEDURES_ICD.csv]
+    [LABEVENTS.csv]
+    [NOTEEVENTS.csv\n(optional)]
+    [PRESCRIPTIONS.csv\n(optional)]
+  }
+  file "ICD <-> CCS\nJSON mappings" as mappings
+  file "D_ICD_DIAGNOSES.csv" as dictionary
+}
++package "Preprocessing" {
+  component "scripts/01_preprocess.py" as p1
+  component "preprocessing/preprocess_mimic.py\n- clean CSV columns\n- map ICD-9 to CCS\n- group rows by SUBJECT_ID + HADM_ID\n- merge modalities" as preprocess
+  database "processed/admissions.pkl" as admissions
+
+  component "scripts/02_build_dataset.py" as p2
+  component "preprocessing/build_dataset.py\n- labs -> text\n- prescriptions -> text\n- procedures -> events\n- diagnosis CCS -> target" as build
+  database "processed/ehrknowgen_dataset.pkl" as dataset
+}
+
+package "Training" {
+  component "scripts/03_train.py" as train_script
+  component "PatientDataset + collate_fn\n- deterministic train/validation split\n- batch four modality strings" as loader
+  component "knowledge_graph.py\nCCS coarse nodes + ICD fine nodes\nparent-child edges" as graph_builder
+  database "Global CCS/ICD graph" as graph
+
+  component "KnowGenT5\nmodels/knowgen_t5.py" as knowgen {
+    component "Shared T5 encoder\nfor notes, events, labs, prescriptions" as encoder
+    component "SoftPromptFusion\nlearned prompts attend per modality" as fusion
+    component "GraphKnowledgeEncoder\nnode text + level embeddings\n+ one message-passing round" as graph_encoder
+    component "KnowledgeAttention\nEHR features query graph nodes" as attention
+    component "KnowledgeCalibration\nCCS logits and feature gate" as calibration
+    component "T5 decoder\ngenerates semicolon-separated CCS labels" as decoder
+  }
+  component "engine/trainer.py\nAdamW + gradient clipping\nLoss = L_f + 0.5 * L_c" as trainer
+  file "checkpoints/ehrknowgen_demo_knowgen.pt\nweights + graph + validation IDs" as checkpoint
+}
+
+package "Evaluation" {
+  component "scripts/04_evaluate.py" as eval_script
+  component "engine/evaluator.py\ngenerate labels; compare exact CCS sets\nmicro precision / recall / F1" as evaluator
+  component "model.explain(batch)\ntop graph nodes and CCS scores" as explain
+}
+
+User --> p1 : run
+raw --> p1
+mappings --> p1
+p1 --> preprocess
+preprocess --> admissions
+
+User --> p2 : run
+admissions --> p2
+p2 --> build
+build --> dataset
+
+User --> train_script : --model knowgen
+dataset --> train_script
+train_script --> loader
+train_script --> graph_builder
+mappings --> graph_builder
+dictionary --> graph_builder
+graph_builder --> graph
+loader --> encoder : notes / events / labs / prescriptions
+encoder --> fusion
+graph --> graph_encoder
+fusion --> attention
+graph_encoder --> attention
+attention --> calibration
+calibration --> decoder
+loader --> trainer : target CCS strings and sets
+calibration --> trainer : L_c
+decoder --> trainer : L_f
+trainer --> checkpoint
+
+User --> eval_script : run
+checkpoint --> eval_script
+dataset --> eval_script
+eval_script --> evaluator
+evaluator --> explain
+
+note right of build
+Diagnosis ICD codes are excluded
+from model inputs because diagnosis
+CCS labels are the training target.
+Use --drop-procedures for a cleaner
+diagnosis-prediction setup.
+end note
+
+note right of raw
+INPUTEVENTS_MV.csv, INPUTEVENTS_CV.csv,
+ICUSTAYS.csv and DRGCODES.csv are not
+currently used by this pipeline.
+end note
+
+@enduml

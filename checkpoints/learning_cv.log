@@ -1,0 +1,7 @@
+129 admissions, 3-fold cross-validation
+
+===== fold 0: train=86 val=43 | baseline F1=0.3456 =====
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/131 [00:00<?, ?it/s]Loading weights: 100%|##########| 131/131 [00:00<00:00, 6866.46it/s]
+Epoch 1/12 | Loss=7.8356 | L_f=7.7759 | L_c=0.1194
+Epoch 2/12 | Loss=5.7856 | L_f=5.7257 | L_c=0.1198

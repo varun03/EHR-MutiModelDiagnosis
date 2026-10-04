@@ -1,0 +1,40 @@
+{
+  "train_size": 19,
+  "val_size": 5,
+  "epochs": 1,
+  "baseline_frequency": {
+    "precision": 0.1818,
+    "recall": 0.3333,
+    "f1": 0.2353,
+    "jaccard": 0.1293
+  },
+  "detect_threshold_0.5": {
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0,
+    "jaccard": 0.0
+  },
+  "detect_topk": {
+    "precision": 0.1091,
+    "recall": 0.2,
+    "f1": 0.1412,
+    "jaccard": 0.0721
+  },
+  "generation": {
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0,
+    "jaccard": 0.0
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "loss": 11.2097,
+      "L_f": 9.9752,
+      "L_c": 2.469,
+      "train_detect_f1": 0.1866,
+      "val_detect_f1": 0.1412
+    }
+  ],
+  "beats_baseline": false
+}
