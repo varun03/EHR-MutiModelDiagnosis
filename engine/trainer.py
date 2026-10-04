@@ -329,6 +329,9 @@ def train_knowgen(
     learning_rate=5e-4,
     max_length=192,
     epoch_callback=None,
+    val_dataloader=None,
+    eval_every=5,
+    grad_accum=1,
 ):
     model.to(device)
 
@@ -341,10 +344,9 @@ def train_knowgen(
         model.train()
 
         total = total_f = total_c = 0.0
+        optimizer.zero_grad()
 
-        for batch in dataloader:
-            optimizer.zero_grad()
-
+        for step, batch in enumerate(dataloader):
             out = model(
                 batch["modalities"],
                 target_texts=batch["label_texts"],
@@ -355,26 +357,98 @@ def train_knowgen(
                 max_length=max_length,
             )
 
-            out["loss"].backward()
+            (out["loss"] / grad_accum).backward()
 
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(),
-                1.0
-            )
-
-            optimizer.step()
+            if (step + 1) % grad_accum == 0 or step + 1 == len(dataloader):
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    1.0
+                )
+                optimizer.step()
+                optimizer.zero_grad()
 
             total += out["loss"].item()
             total_f += out["loss_f"].item()
             total_c += out["loss_c"].item()
 
         n = max(1, len(dataloader))
-        print(
+        line = (
             f"Epoch {epoch + 1}/{epochs} | "
             f"Loss={total / n:.4f} | "
             f"L_f={total_f / n:.4f} | "
             f"L_c={total_c / n:.4f}"
         )
 
+        if val_dataloader is not None and (
+            (epoch + 1) % eval_every == 0 or epoch + 1 == epochs
+        ):
+            v = _eval_knowgen_epoch(
+                model, val_dataloader, device, max_length
+            )
+            line += (
+                f" | val_L_f={v['loss_f']:.4f}"
+                f" | val_L_c={v['loss_c']:.4f}"
+                f" | val_F1@0.5={v['f1']:.4f}"
+                f" | val_F1@top5={v['f1_top5']:.4f}"
+            )
+
+        print(line)
+
         if epoch_callback is not None:
             epoch_callback(epoch + 1, total / n, total_f / n, total_c / n)
+
+
+@torch.no_grad()
+def _eval_knowgen_epoch(model, dataloader, device, max_length=192):
+    """Validation loss plus micro-F1 of the CCS category head.
+
+    F1@0.5 uses a fixed threshold; F1@top5 predicts each patient's five
+    highest-scoring categories, which is informative even when the head is
+    too conservative to cross 0.5.
+    """
+
+    model.eval()
+
+    total_f = total_c = 0.0
+    y_true, y_thr, y_top = [], [], []
+
+    for batch in dataloader:
+        target_lists = [r.get("target", []) for r in batch["records"]]
+
+        out = model(
+            batch["modalities"],
+            target_texts=batch["label_texts"],
+            target_lists=target_lists,
+            max_length=max_length,
+        )
+
+        total_f += out["loss_f"].item()
+        total_c += out["loss_c"].item()
+
+        probs = torch.sigmoid(out["code_logits"])
+        top = torch.zeros_like(probs)
+        top.scatter_(1, probs.topk(min(5, probs.size(1)), dim=1).indices, 1.0)
+
+        y_true.append(
+            model._code_targets(target_lists, probs.device).cpu().numpy()
+        )
+        y_thr.append((probs > 0.5).cpu().numpy())
+        y_top.append(top.cpu().numpy())
+
+    model.train()
+
+    y_true = np.concatenate(y_true)
+    n = max(1, len(dataloader))
+
+    return {
+        "loss_f": total_f / n,
+        "loss_c": total_c / n,
+        "f1": f1_score(
+            y_true, np.concatenate(y_thr),
+            average="micro", zero_division=0,
+        ),
+        "f1_top5": f1_score(
+            y_true, np.concatenate(y_top),
+            average="micro", zero_division=0,
+        ),
+    }

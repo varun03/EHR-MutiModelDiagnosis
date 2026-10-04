@@ -174,6 +174,16 @@ def main(args):
             text_model_name=args.text_model_name,
             num_heads=args.num_heads,
             dropout=args.dropout,
+            calib_weight=args.calib_weight,
+            pos_weight=args.pos_weight,
+        )
+
+        val_dataloader = DataLoader(
+            RecordListDataset(val_records),
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=0,
+            collate_fn=collate_fn,
         )
 
         train_knowgen(
@@ -182,6 +192,9 @@ def main(args):
             device=device,
             epochs=args.epochs,
             learning_rate=args.learning_rate,
+            val_dataloader=val_dataloader,
+            eval_every=args.eval_every,
+            grad_accum=args.grad_accum,
         )
 
         checkpoint_path = Path(args.output_dir) / "ehrknowgen_demo_knowgen.pt"
@@ -272,6 +285,30 @@ if __name__ == "__main__":
         "--dropout",
         type=float,
         default=0.1
+    )
+    parser.add_argument(
+        "--calib-weight",
+        type=float,
+        default=0.5,
+        help="weight of the classification loss L_c in the total loss"
+    )
+    parser.add_argument(
+        "--pos-weight",
+        type=float,
+        default=1.0,
+        help="BCE positive-class weight for L_c (>1 counters label sparsity)"
+    )
+    parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=5,
+        help="run validation every N epochs (knowgen only)"
+    )
+    parser.add_argument(
+        "--grad-accum",
+        type=int,
+        default=1,
+        help="accumulate gradients over N batches (effective batch size)"
     )
     parser.add_argument(
         "--seed",

@@ -100,9 +100,22 @@ class KnowledgeCalibration(nn.Module):
     features passed to the generator.
     """
 
-    def __init__(self, hidden, num_coarse, prior_logits=None):
+    def __init__(self, hidden, num_coarse, prior_logits=None, dropout=0.1):
         super().__init__()
         self.query = nn.Linear(hidden, hidden)
+
+        # Patient-specific path: masked mean of the raw encoder states of each
+        # modality. The fused soft-prompt features are dominated by the
+        # learnable prompts (identical for every patient), so on their own they
+        # carry almost no per-patient signal. The final layer starts at zero so
+        # training begins exactly at the cosine + prior logits.
+        self.direct = nn.Sequential(
+            nn.LayerNorm(hidden * len(MODALITIES)),
+            nn.Dropout(dropout),
+            nn.Linear(hidden * len(MODALITIES), num_coarse),
+        )
+        nn.init.zeros_(self.direct[-1].weight)
+        nn.init.zeros_(self.direct[-1].bias)
         self.gate = nn.Linear(num_coarse, hidden)
         self.num_coarse = num_coarse
 
@@ -117,12 +130,14 @@ class KnowledgeCalibration(nn.Module):
         )
         self.bias = nn.Parameter(bias.clone())
 
-    def forward(self, features, nodes):
+    def forward(self, features, nodes, direct=None):
         pooled = features.mean(1)
         coarse = nodes[: self.num_coarse]
         q = F.normalize(self.query(pooled), dim=-1)
         c = F.normalize(coarse, dim=-1)
         code_logits = self.scale * (q @ c.t()) + self.bias
+        if direct is not None:
+            code_logits = code_logits + self.direct(direct)
         gate = torch.sigmoid(self.gate(torch.sigmoid(code_logits)))
         return features * (1.0 + gate.unsqueeze(1)), code_logits
 
@@ -149,6 +164,7 @@ class KnowGenT5(nn.Module):
         dropout=0.1,
         calib_weight=0.5,
         class_prior=None,
+        pos_weight=1.0,
     ):
         super().__init__()
 
@@ -162,6 +178,7 @@ class KnowGenT5(nn.Module):
         self.code_vocab = list(graph["coarse_names"])
         self.code_to_idx = {c: i for i, c in enumerate(self.code_vocab)}
         self.calib_weight = calib_weight
+        self.pos_weight = pos_weight
 
         self.fusion = SoftPromptFusion(hidden, num_heads, num_prompts, dropout)
         self.knowledge = GraphKnowledgeEncoder(
@@ -179,14 +196,14 @@ class KnowGenT5(nn.Module):
             prior_logits = torch.log(p / (1 - p))
 
         self.knowledge_calibration = KnowledgeCalibration(
-            hidden, graph["num_coarse"], prior_logits
+            hidden, graph["num_coarse"], prior_logits, dropout
         )
 
     # ---------------------------------------------------------------
     def encode(self, batch, max_length=192):
         device = next(self.parameters()).device
 
-        states, masks = [], []
+        states, masks, pooled = [], [], []
         for name in MODALITIES:
             texts = [t if t else "none" for t in batch[name]]
             tok = self.tokenizer(
@@ -196,19 +213,23 @@ class KnowGenT5(nn.Module):
                 max_length=max_length,
                 return_tensors="pt",
             ).to(device)
-            states.append(
-                self.t5.encoder(
-                    input_ids=tok.input_ids,
-                    attention_mask=tok.attention_mask,
-                ).last_hidden_state
-            )
+            h = self.t5.encoder(
+                input_ids=tok.input_ids,
+                attention_mask=tok.attention_mask,
+            ).last_hidden_state
+            states.append(h)
             masks.append(tok.attention_mask.bool())
+
+            m = tok.attention_mask.unsqueeze(-1).to(h.dtype)
+            pooled.append((h * m).sum(1) / m.sum(1).clamp(min=1.0))
 
         unified = self.fusion(states, masks)
         nodes = self.knowledge()
 
         attended, weights = self.knowledge_attention(unified, nodes)
-        calibrated, code_logits = self.knowledge_calibration(attended, nodes)
+        calibrated, code_logits = self.knowledge_calibration(
+            attended, nodes, direct=torch.cat(pooled, dim=-1)
+        )
         return calibrated, code_logits, weights
 
     def _code_targets(self, target_lists, device):
@@ -250,7 +271,11 @@ class KnowGenT5(nn.Module):
 
         loss_f = out.loss
         loss_c = F.binary_cross_entropy_with_logits(
-            code_logits, self._code_targets(target_lists, device)
+            code_logits,
+            self._code_targets(target_lists, device),
+            pos_weight=torch.full(
+                (len(self.code_vocab),), self.pos_weight, device=device
+            ),
         )
 
         return {

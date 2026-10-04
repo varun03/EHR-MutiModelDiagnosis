@@ -12,6 +12,8 @@ def create_model(
     num_layers=2,
     dropout=0.1,
     text_model_name="t5-small",
+    calib_weight=0.5,
+    pos_weight=1.0,
 ):
     """
     Factory method for creating models.
@@ -58,6 +60,8 @@ def create_model(
             model_name=text_model_name,
             num_heads=num_heads,
             dropout=dropout,
+            calib_weight=calib_weight,
+            pos_weight=pos_weight,
         )
 
     raise ValueError(
