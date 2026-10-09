@@ -1,2 +1,9 @@
+@"
+# Model checkpoints
 checkpoints/*.pt
-checkpoints/*.log
+checkpoints/*.pth
+
+# Python cache
+__pycache__/
+*.py[cod]
+"@ | Set-Content -Path ".gitignore"
